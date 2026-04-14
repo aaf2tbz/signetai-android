@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::daemon;
 
@@ -69,26 +69,9 @@ pub async fn get_daemon_pid() -> Result<Option<u32>, String> {
     daemon::read_pid().map_err(|e| e.to_string())
 }
 
-pub(crate) fn open_dashboard_inner(app: &AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("main") {
-        win.show().map_err(|e| e.to_string())?;
-        win.set_focus().map_err(|e| e.to_string())?;
-    } else {
-        let _win = tauri::WebviewWindowBuilder::new(
-            app,
-            "main",
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("Signet")
-        .build()
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 #[tauri::command]
-pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
-    open_dashboard_inner(&app)
+pub async fn open_dashboard(_app: AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]
@@ -175,8 +158,7 @@ pub async fn search_memories(
         return Err(format!("HTTP {}: {}", status, text));
     }
 
-    let text = res.text().await.map_err(|e| format!("Failed to read body: {}", e))?;
-    Ok(text)
+    res.text().await.map_err(|e| format!("Failed to read body: {}", e))
 }
 
 #[tauri::command]
