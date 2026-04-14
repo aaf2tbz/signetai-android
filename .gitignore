@@ -7,6 +7,8 @@ src-tauri/frontend/
 dashboard/dist/
 dashboard/node_modules/
 daemon-rs/
+models/*.gguf
+bin/
 *.apk
 *.aab
 .DS_Store

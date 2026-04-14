@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use super::DaemonManager;
 
 static DAEMON_PID: AtomicU32 = AtomicU32::new(0);
+static LLAMA_PID: AtomicU32 = AtomicU32::new(0);
 
 pub struct AndroidManager;
 
@@ -83,6 +84,109 @@ impl AndroidManager {
         .into())
     }
 
+    fn find_llama_model(&self, data: &std::path::Path) -> Option<PathBuf> {
+        let models_dir = data.join("models");
+        if models_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&models_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if let Some(ext) = p.extension() {
+                        if ext == "gguf" {
+                            return Some(p);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn start_llama_server(&self, data: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        if LLAMA_PID.load(Ordering::SeqCst) != 0 {
+            log::info!("llama-server already running");
+            return Ok(());
+        }
+
+        let bin_dir = data.join("bin");
+        let llama_path = bin_dir.join("llama-server");
+        if !llama_path.is_file() {
+            log::info!("No llama-server binary found, skipping local inference");
+            return Ok(());
+        }
+
+        let model = match self.find_llama_model(data) {
+            Some(m) => m,
+            None => {
+                log::info!("No GGUF model found in models/, skipping llama-server");
+                return Ok(());
+            }
+        };
+
+        log::info!("Starting llama-server with model: {:?}", model);
+
+        let log_path = data.join(".daemon/logs/llama-server.log");
+        let log_file = fs::File::create(&log_path)?;
+
+        let child = Command::new(&llama_path)
+            .arg("--model")
+            .arg(&model)
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg("8080")
+            .arg("--embedding")
+            .arg("--ctx-size")
+            .arg("2048")
+            .arg("--threads")
+            .arg("4")
+            .stdout(log_file.try_clone()?)
+            .stderr(log_file)
+            .spawn()?;
+
+        let pid = child.id();
+        LLAMA_PID.store(pid, Ordering::SeqCst);
+        log::info!("llama-server started with PID: {}", pid);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if std::time::Instant::now() > deadline {
+                log::warn!("llama-server health check timed out after 15s");
+                break;
+            }
+            if std::net::TcpStream::connect(("127.0.0.1", 8080)).is_ok() {
+                log::info!("llama-server health check passed");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+
+        Ok(())
+    }
+
+    fn stop_llama_server(&self) {
+        let pid = LLAMA_PID.load(Ordering::SeqCst);
+        if pid == 0 {
+            return;
+        }
+
+        log::info!("Stopping llama-server PID: {}", pid);
+
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+
+        for _ in 0..20 {
+            let check = unsafe { libc::kill(pid as i32, 0) };
+            if check != 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+
+        LLAMA_PID.store(0, Ordering::SeqCst);
+    }
+
     fn write_pid(&self, pid: u32) -> Result<(), Box<dyn std::error::Error>> {
         let data = app_data_dir();
         let pid_path = data.join(".daemon/pid");
@@ -107,8 +211,11 @@ impl DaemonManager for AndroidManager {
         }
 
         self.ensure_dirs()?;
-        let daemon_path = self.extract_daemon()?;
         let data_dir = app_data_dir();
+
+        self.start_llama_server(&data_dir)?;
+
+        let daemon_path = self.extract_daemon()?;
 
         log::info!("Starting daemon from: {:?}", daemon_path);
         log::info!("SIGNET_PATH: {:?}", data_dir);
@@ -150,6 +257,8 @@ impl DaemonManager for AndroidManager {
     }
 
     fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.stop_llama_server();
+
         let pid = self
             .read_pid_file()
             .unwrap_or(DAEMON_PID.load(Ordering::SeqCst));

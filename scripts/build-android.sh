@@ -11,17 +11,43 @@ export PATH="$NDK_BIN:$PATH"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android28-clang"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"
 
+EMBED_MODEL_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+EMBED_MODEL_FILE="nomic-embed-text-v1.5.Q4_K_M.gguf"
+LLAMA_CPP_DIR="${LLAMA_CPP_DIR:-$HOME/Documents/SignetAI/llama.cpp}"
+
 echo "=== Signet Android Build ==="
 echo "ANDROID_HOME: $ANDROID_HOME"
 echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
 echo "JAVA_HOME: $JAVA_HOME"
 echo ""
 
-echo "[1/5] Copying dashboard..."
+echo "[1/8] Copying dashboard..."
 "$REPO_ROOT/scripts/copy-dashboard.sh"
 
-echo "[2/5] Cross-compiling daemon (aarch64-linux-android)..."
-DAEMON_REPO="${DAEMON_REPO:-$HOME/Documents/SignetAI/signetai}"
+echo "[2/8] Downloading embedding model..."
+MODELS_DIR="$REPO_ROOT/models"
+mkdir -p "$MODELS_DIR"
+if [ -f "$MODELS_DIR/$EMBED_MODEL_FILE" ]; then
+    echo "  Model already downloaded ($(du -sh "$MODELS_DIR/$EMBED_MODEL_FILE" | cut -f1))"
+else
+    curl -L --progress-bar -o "$MODELS_DIR/$EMBED_MODEL_FILE" "$EMBED_MODEL_URL"
+    echo "  Downloaded $(du -sh "$MODELS_DIR/$EMBED_MODEL_FILE" | cut -f1)"
+fi
+
+echo "[3/8] Staging llama-server..."
+LLAMA_BIN="$LLAMA_CPP_DIR/build-android-static/bin/llama-server-stripped"
+if [ ! -f "$LLAMA_BIN" ]; then
+    echo "  ERROR: llama-server not found at $LLAMA_BIN"
+    echo "  Build it first: cd $LLAMA_CPP_DIR && ./scripts/build-android.sh"
+    exit 1
+fi
+
+ASSETS_DIR="$REPO_ROOT/src-tauri/gen/android/app/src/main/assets"
+mkdir -p "$ASSETS_DIR"
+cp "$LLAMA_BIN" "$ASSETS_DIR/llama-server"
+echo "  -> assets/llama-server ($(du -sh "$ASSETS_DIR/llama-server" | cut -f1))"
+
+echo "[4/8] Cross-compiling daemon (aarch64-linux-android)..."
 DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/release/signet-daemon"
 if [ ! -f "$DAEMON_BIN" ]; then
     DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/debug/signet-daemon"
@@ -41,13 +67,14 @@ if [ ! -f "$DAEMON_BIN" ]; then
     fi
 fi
 
-ASSETS_DIR="$REPO_ROOT/src-tauri/gen/android/app/src/main/assets"
-mkdir -p "$ASSETS_DIR"
 cp "$DAEMON_BIN" "$ASSETS_DIR/signet-daemon"
-DAEMON_SIZE=$(du -sh "$ASSETS_DIR/signet-daemon" | cut -f1)
-echo "  -> assets/signet-daemon ($DAEMON_SIZE)"
+echo "  -> assets/signet-daemon ($(du -sh "$ASSETS_DIR/signet-daemon" | cut -f1))"
 
-echo "[3/5] Building Rust library (aarch64-linux-android)..."
+echo "[5/8] Staging GGUF model for first-launch extraction..."
+cp "$MODELS_DIR/$EMBED_MODEL_FILE" "$ASSETS_DIR/$EMBED_MODEL_FILE"
+echo "  -> assets/$EMBED_MODEL_FILE ($(du -sh "$ASSETS_DIR/$EMBED_MODEL_FILE" | cut -f1))"
+
+echo "[6/8] Building Rust library (aarch64-linux-android)..."
 cargo build \
     --package signet-android \
     --manifest-path "$REPO_ROOT/src-tauri/Cargo.toml" \
@@ -63,7 +90,7 @@ mkdir -p "$JNI_DIR"
 ln -sf "$REPO_ROOT/$LIB" "$JNI_DIR/libsignet_android_lib.so"
 echo "  -> $LIB"
 
-echo "[4/5] Assembling APK..."
+echo "[7/8] Assembling APK..."
 GRADLE_TASK="assembleArm64Debug"
 if [ "${RELEASE:-}" = "--release" ]; then
     GRADLE_TASK="assembleArm64Release"
@@ -77,7 +104,7 @@ fi
     -x :app:rustBuildArm64Release \
     -x :app:rustBuildUniversalRelease
 
-echo "[5/5] Done!"
+echo "[8/8] Done!"
 APK_DIR="$REPO_ROOT/src-tauri/gen/android/app/build/outputs/apk/arm64"
 APK=$(find "$APK_DIR" -name "*.apk" | head -1)
 if [ -n "$APK" ]; then
@@ -87,4 +114,7 @@ if [ -n "$APK" ]; then
     echo ""
     echo "Install:  adb install -r $APK"
     echo "Run:      adb shell am start -n ai.signet.app/.MainActivity"
+    echo ""
+    echo "Contents:"
+    unzip -l "$APK" | grep -E "assets/" | awk '{print "  "$4" ("$1" bytes)"}'
 fi
