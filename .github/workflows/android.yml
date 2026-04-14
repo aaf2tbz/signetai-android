@@ -31,6 +31,10 @@ jobs:
           yes | "$ANDROID_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_ROOT" "ndk;26.1.10909125" > /dev/null
           echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+          echo "$ANDROID_ROOT/ndk/26.1.10909125/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Create frontend stub
+        run: mkdir -p src-tauri/frontend && echo '<!DOCTYPE html><html><body></body></html>' > src-tauri/frontend/index.html
 
       - name: Check Tauri app (aarch64-linux-android)
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --verbose

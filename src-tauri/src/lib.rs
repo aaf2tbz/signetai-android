@@ -2,11 +2,6 @@ mod commands;
 mod daemon;
 mod platform;
 
-use tauri::Manager;
-
-#[cfg(not(target_os = "android"))]
-use tauri::Listener;
-
 pub fn run() {
     #[cfg(target_os = "android")]
     {
