@@ -15,8 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          targets: aarch64-linux-android
+
+      - name: Add Android target
+        run: rustup target add aarch64-linux-android
 
       - name: Install Android NDK
         run: |
