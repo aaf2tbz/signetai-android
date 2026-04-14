@@ -21,11 +21,12 @@ jobs:
       - name: Install Android NDK
         run: |
           ANDROID_ROOT="$HOME/android-sdk"
-          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
-          mkdir -p "$ANDROID_ROOT"
+          mkdir -p "$ANDROID_ROOT/cmdline-tools"
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip
-          unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_ROOT/latest"
-          yes | "$ANDROID_ROOT/latest/bin/sdkmanager" --sdk_root="$ANDROID_ROOT" "ndk;26.1.10909125" > /dev/null 2>&1
+          unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_ROOT/cmdline-tools"
+          mv "$ANDROID_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_ROOT/cmdline-tools/latest" 2>/dev/null || true
+          yes | "$ANDROID_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_ROOT" "ndk;26.1.10909125" > /dev/null
+          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - name: Check Tauri app (aarch64-linux-android)
