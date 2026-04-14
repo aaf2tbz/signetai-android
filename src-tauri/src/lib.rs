@@ -2,6 +2,7 @@ mod commands;
 mod daemon;
 mod platform;
 
+#[cfg_attr(target_os = "android", tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "android")]
     {
