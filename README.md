@@ -1,53 +1,60 @@
 # Signet Android
 
-Native Android APK wrapping the Signet daemon and SvelteKit dashboard using Tauri 2. Self-contained — the daemon binary, llama-server, and embedding model are bundled inside the APK and extracted on first launch. On-device inference via llama.cpp for embeddings and extraction.
+Native Android APK wrapping the Signet daemon and SvelteKit dashboard using Tauri 2. Fully self-contained — binaries and models are bundled in the APK and extracted on first launch. On-device inference via two llama.cpp sidecar instances for embeddings and extraction.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  APK (255MB debug / ~65MB release)              │
-│                                                  │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────┐ │
-│  │ Tauri 2  │  │ signet-daemon│  │llama-server│ │
-│  │ WebView  │──│ :3850 HTTP   │──│ :8080      │ │
-│  │ Dashboard│  │ pipeline/API │  │ embeddings │ │
-│  └──────────┘  └──────────────┘  └─────┬─────┘ │
-│                                        │        │
-│                                  ┌─────┴─────┐  │
-│                                  │ GGUF model │  │
-│                                  │ (95MB Q4)  │  │
-│                                  └───────────┘  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  APK                                                          │
+│                                                               │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────┐ ┌──────────┐ │
+│  │ Tauri 2  │  │ signet-daemon│  │llama-server│ │llama-    │ │
+│  │ WebView  │──│ :3850 API    │──│ :8080      │ │server    │ │
+│  │ Dashboard│  │ pipeline     │  │ embeddings │ │:8081     │ │
+│  └──────────┘  └──────────────┘  └─────┬──────┘ └────┬─────┘ │
+│                                        │              │       │
+│                                  ┌─────┴────┐  ┌─────┴─────┐ │
+│                                  │ nomic    │  │ Qwen2.5   │ │
+│                                  │ embed    │  │ 1.5B      │ │
+│                                  │ 95MB Q4  │  │ 897MB Q4  │ │
+│                                  └──────────┘  └───────────┘ │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Tauri 2 Runtime**: Native WebView hosting the full SvelteKit dashboard
-- **signet-daemon**: Rust HTTP server on `:3850` — memory pipeline, API, SQLite storage
-- **llama-server**: llama.cpp server on `:8080` — on-device embedding and LLM inference
-  - OpenAI-compatible API (`/v1/embeddings`, `/v1/chat/completions`)
-  - Uses `nomic-embed-text-v1.5` Q4_K_M (95MB) for embeddings
-  - Can load extraction LLMs (Qwen 0.6B-4B) for on-device extraction
-- **Kotlin layer**: Extracts binaries + model from APK assets, creates config, starts services
+- **llama-server :8080** — `nomic-embed-text-v1.5` Q4_K_M (95MB) for vector embeddings
+- **llama-server :8081** — `Qwen2.5-1.5B-Instruct` Q4_0_4_8 (897MB, ARM-optimized) for extraction/synthesis
+- **signet-daemon :3850** — memory pipeline, API, SQLite + sqlite-vec storage
+- **Tauri WebView** — full SvelteKit dashboard, connects to daemon API
 
 ## Flow on Device
 
 1. App launches → `MainActivity.onCreate()`
-2. Kotlin extracts binaries from APK `assets/` to `files/.agents/bin/` (first launch only)
-3. Kotlin extracts GGUF model to `files/.agents/models/`
-4. Creates `files/.agents/agent.yaml` with `llama-cpp` as provider
+2. Kotlin extracts binaries (`signet-daemon`, `llama-server`) from APK `assets/` to `files/.agents/bin/`
+3. Kotlin extracts GGUF models to `files/.agents/models/`
+4. Creates `files/.agents/agent.yaml` with `llama-cpp` providers
 5. Starts foreground service
-6. Rust Tauri lib spawns **llama-server** with `--embedding` flag and the GGUF model
-7. Health check polls `localhost:8080` until llama-server responds (up to 15s)
-8. Spawns **signet-daemon** with `SIGNET_PATH` pointing to `.agents/`
-9. Health check polls `localhost:3850` until daemon responds (up to 10s)
-10. WebView loads dashboard → connects to daemon API
+6. Rust spawns **llama-server :8080** with `--embedding` + nomic-embed model
+7. Rust spawns **llama-server :8081** with Qwen2.5-1.5B model
+8. Spawns **signet-daemon :3850** with `SIGNET_PATH` → `.agents/`
+9. WebView loads dashboard → connects to daemon API
+
+## Models
+
+| Task | Model | Quant | Size | Port |
+|------|-------|-------|------|------|
+| Embedding | nomic-embed-text-v1.5 | Q4_K_M | 95MB | :8080 |
+| Extraction | Qwen2.5-1.5B-Instruct | Q4_0_4_8 (ARM-optimized) | 897MB | :8081 |
+| Synthesis | Qwen2.5-1.5B-Instruct | Q4_0_4_8 | 897MB | :8081 |
+
+The `Q4_0_4_8` quantization uses ARM `i8mm` instructions for ~2x inference speedup on Snapdragon 8 Gen 1 (Galaxy S22). At 1.5B params, Qwen2.5 is capable of structured JSON extraction (entities, aspects, confidence scores) at ~15-20 tok/s on-device.
 
 ## Prerequisites
 
 1. **Android SDK** (API 28+) with NDK 26.x
 2. **Rust target**: `rustup target add aarch64-linux-android`
 3. **JDK 17** (not newer — Gradle 8.x incompatibility with JDK 21+)
-4. **llama.cpp** built for Android (see below)
+4. **llama.cpp** cross-compiled for Android (see below)
 5. **bun** (for dashboard build)
 
 ### Environment
@@ -83,7 +90,7 @@ $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-strip \
 scripts/build-android.sh
 ```
 
-This handles: copying dashboard, downloading GGUF model, staging llama-server + daemon + model in assets, building Rust .so, and assembling APK.
+Downloads models, stages llama-server + daemon + models in assets, builds Rust .so, assembles APK.
 
 ### Release build
 
@@ -99,37 +106,16 @@ adb install -r "$APK"
 adb shell am start -n ai.signet.app/.MainActivity
 ```
 
-## On-Device Inference
-
-The daemon uses `llama-cpp` as the default provider on Android (via `#[cfg(target_os = "android")]` in config defaults):
-
-| Task | Default | Model | Port |
-|------|---------|-------|------|
-| Embedding | llama-cpp | nomic-embed-text-v1.5 Q4_K_M | :8080 |
-| Extraction | llama-cpp | *(needs GGUF in models/)* | :8080 |
-| Synthesis | llama-cpp | *(needs GGUF in models/)* | :8080 |
-
-To add an extraction/synthesis LLM, place a GGUF file in `files/.agents/models/` and update `agent.yaml`:
-
-```yaml
-memory:
-  pipelineV2:
-    extraction:
-      provider: llama-cpp
-      model: qwen3.5-0.6b
-```
-
-The llama-server loads the first `.gguf` file found in `models/`. For multi-model support, additional configuration is needed.
-
 ## Key Decisions
 
+- **Two llama-server instances** — one for embeddings (nomic, :8080), one for extraction (Qwen, :8081). llama.cpp loads one model per process.
+- **Qwen2.5-1.5B-Instruct** — best size/quality tradeoff for structured extraction on mobile. 0.5B too dumb, 3B RAM-tight with both models loaded.
+- **Q4_0_4_8 quantization** — ARM i8mm instruction set optimization, ~2x speedup on Snapdragon 8 Gen 1
 - **Sidecar llama-server** instead of llama-cpp-rs — simpler to update, decoupled from Rust FFI
 - **`rustls-tls`** instead of `native-tls` — OpenSSL doesn't cross-compile to Android cleanly
 - **APK `assets/`** for all binaries — files next to the .so in `lib/` aren't accessible at runtime
 - **Kotlin extracts**, Rust spawns — separation of extraction (needs Android `assets/` API) and spawning
-- **`File(filesDir, ".agents")`** instead of `getDir(".agents")` — avoids Android's `app_` prefix
 - **JDK 17** — Gradle 8.x fails with JDK 21+ (class file version mismatch)
-- **Q4_K_M quant** — good quality/size tradeoff for on-device embedding (~95MB vs ~270MB Q8)
 
 ## Project Structure
 
@@ -141,30 +127,31 @@ src-tauri/
     daemon.rs           — Daemon lifecycle coordinator
     platform/
       mod.rs            — DaemonManager trait + factory
-      android.rs        — Android: app_data_dir(), llama-server + daemon spawn, health checks
+      android.rs        — Dual llama-server spawn, daemon spawn, health checks
       linux/macos/win   — Desktop stubs
   Cargo.toml            — reqwest with rustls-tls, android_logger gated to android
   tauri.conf.json       — minSdkVersion 28, CSP, frontendDist
 
 src-tauri/gen/android/  (generated by tauri android init, gitignored)
   app/src/main/
-    java/.../MainActivity.kt       — Extract binaries + model, create config, start service
+    java/.../MainActivity.kt       — Extract binaries + models, create config, start service
     java/.../SignetDaemonService.kt — Foreground service with notification
     AndroidManifest.xml            — Permissions, intent filters, service declaration
     assets/
-      signet-daemon                — Cross-compiled daemon binary
-      llama-server                 — Cross-compiled llama.cpp server
-      nomic-embed-text-v1.5.Q4_K_M.gguf — Embedding model
+      signet-daemon                — Cross-compiled daemon (13MB)
+      llama-server                 — Cross-compiled llama.cpp server (15MB)
+      nomic-embed-text-v1.5.Q4_K_M.gguf — Embedding model (80MB)
+      Qwen2.5-1.5B-Instruct-Q4_0_4_8.gguf — Extraction model (892MB)
 
 daemon-rs/              — Copy of upstream daemon, patched for Android
   crates/signet-pipeline/src/
-    embedding.rs        — OllamaProvider, OpenAIProvider, LlamaCppProvider, NoopProvider
+    embedding.rs        — OllamaProvider, OpenAIProvider, LlamaCppProvider
     provider.rs         — OllamaLlmProvider, AnthropicProvider, LlamaCppLlmProvider
   crates/signet-core/src/
-    config.rs           — Platform-gated defaults: llama-cpp on Android, ollama on desktop
+    config.rs           — Platform-gated defaults: llama-cpp on Android, endpoints per port
 
 scripts/
-  build-android.sh      — One-command APK build (downloads model, stages assets)
+  build-android.sh      — One-command APK build (downloads models, stages assets)
   copy-dashboard.sh     — Copies built dashboard from upstream signetai
 ```
 
@@ -176,7 +163,9 @@ scripts/
 | Daemon binary | `files/.agents/bin/signet-daemon` |
 | llama-server | `files/.agents/bin/llama-server` |
 | Embedding model | `files/.agents/models/nomic-embed-text-v1.5.Q4_K_M.gguf` |
+| Extraction model | `files/.agents/models/Qwen2.5-1.5B-Instruct-Q4_0_4_8.gguf` |
 | Agent config | `files/.agents/agent.yaml` |
 | Daemon logs | `files/.agents/.daemon/logs/daemon.log` |
-| llama-server logs | `files/.agents/.daemon/logs/llama-server.log` |
+| llama-server embed logs | `files/.agents/.daemon/logs/llama-server-embed.log` |
+| llama-server llm logs | `files/.agents/.daemon/logs/llama-server-llm.log` |
 | Memory storage | `files/.agents/memory/` |
