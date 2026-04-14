@@ -17,6 +17,7 @@ pub fn run() {
 
     #[cfg(not(target_os = "android"))]
     {
+        use tauri::Manager;
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -37,16 +38,20 @@ pub fn run() {
             commands::share_text,
             commands::quit_app,
             commands::check_for_update,
-        ])
-        .on_window_event(|window, event| {
+        ]);
+
+    #[cfg(not(target_os = "android"))]
+    {
+        builder = builder.on_window_event(|window, event| {
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                 }
             }
         });
+    }
 
-    builder = builder.setup(|app| {
+    builder = builder.setup(|_app| {
         #[cfg(target_os = "android")]
         {
             use tauri::Listener;
