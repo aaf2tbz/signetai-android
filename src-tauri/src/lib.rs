@@ -51,7 +51,7 @@ pub fn run() {
         });
     }
 
-    builder = builder.setup(|_app| {
+    builder = builder.setup(|app| {
         #[cfg(target_os = "android")]
         {
             use tauri::Listener;
@@ -65,6 +65,9 @@ pub fn run() {
                 }
             });
         }
+
+        #[cfg(not(target_os = "android"))]
+        let _ = app;
 
         let port = commands::daemon_port();
         let daemon_up =
