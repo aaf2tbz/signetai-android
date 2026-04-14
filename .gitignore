@@ -3,6 +3,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/signet-daemon-*
+src-tauri/frontend/
 dashboard/dist/
 dashboard/node_modules/
 daemon-rs/

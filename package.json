@@ -4,9 +4,11 @@
   "private": true,
   "description": "Signet Android application",
   "scripts": {
-    "build:dashboard": "cd dashboard && bun run build",
+    "build:dashboard": "bash scripts/copy-dashboard.sh",
     "build:daemon": "cargo build --manifest-path daemon-rs/Cargo.toml --release -p signet-daemon --target aarch64-linux-android",
     "build:daemon:host": "cargo build --manifest-path daemon-rs/Cargo.toml --release -p signet-daemon",
+    "build:apk": "bash scripts/build-android.sh",
+    "build:apk:release": "RELEASE=--release bash scripts/build-android.sh",
     "stage:daemon": "node scripts/stage-daemon.mjs",
     "dev": "tauri dev",
     "build": "tauri build",
