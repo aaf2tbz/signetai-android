@@ -1,0 +1,24 @@
+{
+  "name": "signetai-android",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signet Android application",
+  "scripts": {
+    "build:dashboard": "cd dashboard && bun run build",
+    "build:daemon": "cargo build --manifest-path daemon-rs/Cargo.toml --release -p signet-daemon --target aarch64-linux-android",
+    "build:daemon:host": "cargo build --manifest-path daemon-rs/Cargo.toml --release -p signet-daemon",
+    "stage:daemon": "node scripts/stage-daemon.mjs",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:android": "tauri android build",
+    "build:android:debug": "tauri android build --debug",
+    "android:init": "tauri android init",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}
