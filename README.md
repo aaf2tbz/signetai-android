@@ -1,106 +1,153 @@
 # Signet Android
 
-Native Android APK wrapping the Signet daemon and dashboard using Tauri 2.
+Native Android APK wrapping the Signet daemon and SvelteKit dashboard using Tauri 2. Self-contained — the daemon binary is bundled inside the APK and extracted on first launch.
 
 ## Architecture
 
-- **Tauri 2 Runtime**: Native WebView hosting the Signet dashboard
-- **signet-daemon (sidecar)**: Rust binary running as a child process inside the APK
+- **Tauri 2 Runtime**: Native WebView hosting the full SvelteKit dashboard
+- **signet-daemon (bundled)**: Rust binary extracted from APK `assets/` to internal storage on first launch
   - HTTP server on `localhost:3850`
-  - SQLite storage in app's internal data directory
-  - Embedding fetch, file watching, memory pipeline
-- **Android Integration**: Share target, foreground service, notifications
+  - SQLite + vector embeddings in `/data/data/ai.signet.app/files/.agents/`
+  - Memory pipeline, file watching, embedding fetch
+- **Kotlin layer**: Extracts daemon, creates config, starts foreground service, handles share intents
+- **Android Integration**: Share target (`text/plain`), foreground service with notification
+
+## Flow on Device
+
+1. App launches → `MainActivity.onCreate()`
+2. Kotlin extracts `assets/signet-daemon` → `files/.agents/bin/signet-daemon` (first launch only)
+3. Creates `files/.agents/agent.yaml` with default config
+4. Starts foreground service
+5. Rust Tauri lib spawns daemon as child process with `SIGNET_PATH` pointing to `.agents/`
+6. Health check polls `localhost:3850` until daemon responds
+7. WebView loads dashboard → connects to daemon API
 
 ## Prerequisites
 
-1. **Android Studio** with SDK (API 28+)
-2. **Android NDK** 26.x
-3. **Rust Android target**: `rustup target add aarch64-linux-android`
-4. **Java JDK 17+**
-5. **Tauri CLI 2**: `cargo install tauri-cli --version "^2"`
+1. **Android SDK** (API 28+) with NDK 26.x
+2. **Rust target**: `rustup target add aarch64-linux-android`
+3. **JDK 17** (not newer — Gradle 8.x incompatibility with JDK 21+)
+4. **bun** (for dashboard build)
 
-### Environment Setup
+### Environment
 
 ```bash
 export ANDROID_HOME=$HOME/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125
-export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
 ```
 
 ## Building
 
-### 1. Build daemon for Android
+### One-command build
 
 ```bash
-cd daemon-rs
-cargo build --release --target aarch64-linux-android
+scripts/build-android.sh
 ```
 
-If `daemon-rs` is symlinked from the main signetai repo, the binary will be at:
-`daemon-rs/target/aarch64-linux-android/release/signet-daemon`
+This handles everything: copying the dashboard, cross-compiling the daemon into `assets/`, building the Rust .so, and assembling the APK.
 
-### 2. Stage daemon sidecar
+### Release build
 
 ```bash
-export SIGNET_DAEMON_BIN=daemon-rs/target/aarch64-linux-android/release/signet-daemon
-node scripts/stage-daemon.mjs
+RELEASE=--release scripts/build-android.sh
 ```
 
-### 3. Initialize Tauri Android (first time only)
+### Manual steps
+
+<details>
+<summary>Step-by-step (if you need control)</summary>
+
+1. **Copy dashboard** from upstream signetai:
+   ```bash
+   scripts/copy-dashboard.sh
+   ```
+
+2. **Cross-compile daemon** (must use `rustls-tls`, not `native-tls`):
+   ```bash
+   cargo build --package signet-daemon \
+     --manifest-path daemon-rs/Cargo.toml \
+     --target aarch64-linux-android --release
+   ```
+
+3. **Stage daemon in assets**:
+   ```bash
+   mkdir -p src-tauri/gen/android/app/src/main/assets
+   cp daemon-rs/target/aarch64-linux-android/release/signet-daemon \
+      src-tauri/gen/android/app/src/main/assets/signet-daemon
+   ```
+
+4. **Build Rust library**:
+   ```bash
+   cargo build --package signet-android \
+     --manifest-path src-tauri/Cargo.toml \
+     --target aarch64-linux-android \
+     --features tauri/custom-protocol --lib
+   ```
+
+5. **Symlink .so** and run Gradle:
+   ```bash
+   mkdir -p src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
+   ln -sf $(pwd)/src-tauri/target/aarch64-linux-android/debug/libsignet_android_lib.so \
+      src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/
+
+   src-tauri/gen/android/gradlew \
+     --project-dir src-tauri/gen/android \
+     :app:assembleArm64Debug \
+     -x :app:rustBuildArm64Debug
+   ```
+</details>
+
+### Install & Run
 
 ```bash
-cargo tauri android init
+APK=$(find src-tauri/gen/android/app/build/outputs/apk/arm64 -name "*.apk" | head -1)
+adb install -r "$APK"
+adb shell am start -n ai.signet.app/.MainActivity
 ```
 
-### 4. Build APK
+## Key Decisions
 
-```bash
-# Debug build (for development)
-cargo tauri android build --debug
-
-# Release build
-cargo tauri android build
-```
-
-Output: `src-tauri/gen/android/app/build/outputs/apk/`
-
-### 5. Install
-
-```bash
-adb install -r src-tauri/gen/android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-## Development
-
-For now, the dashboard is a lightweight HTML page. To use the full SvelteKit dashboard:
-
-1. Replace the `index.html` with the built output from `packages/cli/dashboard`
-2. Update `tauri.conf.json` `build.frontendDist` to point to the dashboard dist directory
-
-## Share Target
-
-The app registers as an Android share target for `text/plain`. Users can share
-text from any app (Claude, ChatGPT, etc.) directly to Signet for ingestion.
+- **`rustls-tls`** instead of `native-tls` — OpenSSL doesn't cross-compile to Android cleanly
+- **APK `assets/`** for the daemon binary — files next to the .so in `lib/` aren't accessible at runtime
+- **Kotlin extracts**, Rust spawns — separation of extraction (needs Android `assets/` API) and spawning (needs Rust `Command`)
+- **`File(filesDir, ".agents")`** instead of `getDir(".agents")` — avoids Android's `app_` prefix on directory names
+- **JDK 17** — Gradle 8.x fails with JDK 21+ (class file version mismatch)
 
 ## Project Structure
 
 ```
 src-tauri/
   src/
-    main.rs           — Entry point
-    lib.rs            — Tauri app setup (Android-aware)
-    commands.rs       — Tauri commands (no tray deps)
-    daemon.rs         — Daemon lifecycle management
+    lib.rs              — Tauri app setup (Android-gated, no tray/single-instance)
+    commands.rs         — Tauri commands (daemon_port, daemon_status, data_dir)
+    daemon.rs           — Daemon lifecycle coordinator
     platform/
-      mod.rs          — DaemonManager trait + factory
-      android.rs      — Android daemon manager (extract, spawn, manage)
-      linux.rs        — Linux stub (dev)
-      macos.rs        — macOS stub (dev)
-      windows.rs      — Windows stub (dev)
-  capabilities/       — Tauri permissions
-  binaries/           — Staged daemon sidecar binary
-  icons/              — App icons
-  tauri.conf.json     — Tauri configuration
+      mod.rs            — DaemonManager trait + factory
+      android.rs        — Android: app_data_dir(), extract, spawn, health check, SIGTERM shutdown
+      linux/macos/win   — Desktop stubs
+  Cargo.toml            — reqwest with rustls-tls, android_logger gated to android
+  tauri.conf.json       — minSdkVersion 28, CSP, frontendDist
+
+src-tauri/gen/android/  (generated by tauri android init, gitignored)
+  app/src/main/
+    java/.../MainActivity.kt       — Extract daemon, create config, start service, share intent
+    java/.../SignetDaemonService.kt — Foreground service with notification
+    AndroidManifest.xml            — Permissions, intent filters, service declaration
+    assets/signet-daemon           — Cross-compiled daemon binary (staged at build time)
+
+daemon-rs/              — Copy of upstream daemon, patched for Android (rustls, getloadavg guard)
 scripts/
-  stage-daemon.mjs    — Daemon sidecar staging script
+  build-android.sh      — One-command APK build
+  copy-dashboard.sh     — Copies built dashboard from upstream signetai
 ```
+
+## Device Paths
+
+| What | Path |
+|------|------|
+| Data directory | `/data/data/ai.signet.app/files/.agents/` |
+| Daemon binary | `files/.agents/bin/signet-daemon` |
+| Agent config | `files/.agents/agent.yaml` |
+| Daemon logs | `files/.agents/.daemon/logs/daemon.log` |
+| Memory storage | `files/.agents/memory/` |

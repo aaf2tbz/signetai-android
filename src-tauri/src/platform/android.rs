@@ -20,19 +20,14 @@ pub fn app_data_dir() -> PathBuf {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("/data/local/tmp"));
 
-    let candidate = exe_dir.join("../../../files");
-    if candidate.exists() {
-        return fs::canonicalize(&candidate).unwrap_or(candidate);
+    for suffix in &["../../../files", "../../files", "../files"] {
+        let candidate = exe_dir.join(suffix).join(".agents");
+        if candidate.exists() {
+            return fs::canonicalize(&candidate).unwrap_or(candidate);
+        }
     }
 
-    let candidate = exe_dir.join("../../files");
-    if candidate.exists() {
-        return fs::canonicalize(&candidate).unwrap_or(candidate);
-    }
-
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/data/data/ai.signet.app/files"))
-        .join(".agents")
+    PathBuf::from("/data/data/ai.signet.app/files/.agents")
 }
 
 impl AndroidManager {
@@ -54,34 +49,38 @@ impl AndroidManager {
     fn extract_daemon(&self) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let data = app_data_dir();
         let bin_dir = data.join("bin");
-        fs::create_dir_all(&bin_dir)?;
 
-        let daemon_name = format!("signet-daemon-{}", super::target_name());
-        let target_path = bin_dir.join(&daemon_name);
-
-        if target_path.exists() {
-            return Ok(target_path);
+        let daemon_path = bin_dir.join("signet-daemon");
+        if daemon_path.is_file() {
+            return Ok(daemon_path);
         }
 
-        let fallback = bin_dir.join("signet-daemon");
-        if fallback.exists() {
-            return Ok(fallback);
+        let daemon_named = bin_dir.join(format!("signet-daemon-{}", super::target_name()));
+        if daemon_named.is_file() {
+            return Ok(daemon_named);
         }
 
         if let Some(bundled) = super::find_bundled_daemon() {
             let src = PathBuf::from(&bundled);
-            fs::copy(&src, &target_path)?;
+            let target = bin_dir.join("signet-daemon");
+            fs::create_dir_all(&bin_dir)?;
+            fs::copy(&src, &target)?;
 
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&target_path, fs::Permissions::from_mode(0o755))?;
+                fs::set_permissions(&target, fs::Permissions::from_mode(0o755))?;
             }
 
-            return Ok(target_path);
+            return Ok(target);
         }
 
-        Err("No daemon binary found. The APK must include a signet-daemon binary for aarch64-linux-android.".into())
+        Err(format!(
+            "No daemon binary found at {:?}. \
+             Kotlin should have extracted it from APK assets on first launch.",
+            daemon_path
+        )
+        .into())
     }
 
     fn write_pid(&self, pid: u32) -> Result<(), Box<dyn std::error::Error>> {

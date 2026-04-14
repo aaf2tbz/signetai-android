@@ -17,10 +17,37 @@ echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
 echo "JAVA_HOME: $JAVA_HOME"
 echo ""
 
-echo "[1/4] Copying dashboard..."
+echo "[1/5] Copying dashboard..."
 "$REPO_ROOT/scripts/copy-dashboard.sh"
 
-echo "[2/4] Building Rust library (aarch64-linux-android)..."
+echo "[2/5] Cross-compiling daemon (aarch64-linux-android)..."
+DAEMON_REPO="${DAEMON_REPO:-$HOME/Documents/SignetAI/signetai}"
+DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/release/signet-daemon"
+if [ ! -f "$DAEMON_BIN" ]; then
+    DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/debug/signet-daemon"
+fi
+
+if [ ! -f "$DAEMON_BIN" ]; then
+    echo "  Building daemon from daemon-rs/..."
+    cargo build \
+        --package signet-daemon \
+        --manifest-path "$REPO_ROOT/daemon-rs/Cargo.toml" \
+        --target aarch64-linux-android \
+        ${RELEASE:+--release}
+    if [ "${RELEASE:-}" = "--release" ]; then
+        DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/release/signet-daemon"
+    else
+        DAEMON_BIN="$REPO_ROOT/daemon-rs/target/aarch64-linux-android/debug/signet-daemon"
+    fi
+fi
+
+ASSETS_DIR="$REPO_ROOT/src-tauri/gen/android/app/src/main/assets"
+mkdir -p "$ASSETS_DIR"
+cp "$DAEMON_BIN" "$ASSETS_DIR/signet-daemon"
+DAEMON_SIZE=$(du -sh "$ASSETS_DIR/signet-daemon" | cut -f1)
+echo "  -> assets/signet-daemon ($DAEMON_SIZE)"
+
+echo "[3/5] Building Rust library (aarch64-linux-android)..."
 cargo build \
     --package signet-android \
     --manifest-path "$REPO_ROOT/src-tauri/Cargo.toml" \
@@ -36,7 +63,7 @@ mkdir -p "$JNI_DIR"
 ln -sf "$REPO_ROOT/$LIB" "$JNI_DIR/libsignet_android_lib.so"
 echo "  -> $LIB"
 
-echo "[3/4] Assembling APK..."
+echo "[4/5] Assembling APK..."
 GRADLE_TASK="assembleArm64Debug"
 if [ "${RELEASE:-}" = "--release" ]; then
     GRADLE_TASK="assembleArm64Release"
@@ -50,7 +77,7 @@ fi
     -x :app:rustBuildArm64Release \
     -x :app:rustBuildUniversalRelease
 
-echo "[4/4] Done!"
+echo "[5/5] Done!"
 APK_DIR="$REPO_ROOT/src-tauri/gen/android/app/build/outputs/apk/arm64"
 APK=$(find "$APK_DIR" -name "*.apk" | head -1)
 if [ -n "$APK" ]; then
