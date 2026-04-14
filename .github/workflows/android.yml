@@ -2,25 +2,34 @@ name: Android CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  check:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: set up JDK 11
-      uses: actions/setup-java@v4
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-        cache: gradle
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          targets: aarch64-linux-android
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-    - name: Build with Gradle
-      run: ./gradlew build
+      - name: Install Android NDK
+        run: |
+          ANDROID_ROOT="$HOME/android-sdk"
+          echo "ANDROID_HOME=$ANDROID_ROOT" >> "$GITHUB_ENV"
+          mkdir -p "$ANDROID_ROOT"
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdline-tools.zip
+          unzip -q -o /tmp/cmdline-tools.zip -d "$ANDROID_ROOT/latest"
+          yes | "$ANDROID_ROOT/latest/bin/sdkmanager" --sdk_root="$ANDROID_ROOT" "ndk;26.1.10909125" > /dev/null 2>&1
+          echo "ANDROID_NDK_HOME=$ANDROID_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - name: Check Tauri app (aarch64-linux-android)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-linux-android --verbose
+        env:
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: "-Clink-arg=-landroid -Clink-arg=-llog -Clink-arg=-lOpenSLES"
